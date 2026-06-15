@@ -5,7 +5,7 @@
 **Issue:** [scikit-learn/scikit-learn#29521 — NDCG in case of absence of relevant items](https://github.com/scikit-learn/scikit-learn/issues/29521)
 **Repository:** [scikit-learn/scikit-learn](https://github.com/scikit-learn/scikit-learn) (Python / Cython / C++)
 **Labels:** `Bug`, `help wanted`
-**Status:** Phase I Complete
+**Status:** Phase II Complete
 
 ---
 
@@ -56,7 +56,36 @@ The all-zero sample yields DCG = 0 and ideal DCG = 0; the `0/0` case is currentl
 
 ### Environment Setup
 
-<mark>[Phase II — notes on building scikit-learn from source: clone, create a virtual environment, `pip install -e .`, run the test suite. Document any setup challenges and how you solved them.]</mark>
+scikit-learn ships compiled Cython/C++ extensions, so it must be **built from source** — a plain `pip install scikit-learn` would install the released package, not my editable working copy. I built it on macOS (Apple Silicon, Python 3.14) following the project's [Building from source](https://scikit-learn.org/stable/developers/advanced_installation.html) guide.
+
+**Prerequisites (already satisfied on my machine):**
+- **C/C++ compiler** — Xcode command line tools (`xcode-select -p` → `/Applications/Xcode.app/...`).
+- **OpenMP runtime** — Homebrew `libomp` (`brew install libomp`). This is the classic macOS scikit-learn gotcha; because it was already installed, meson auto-detected it and the build needed no extra `CFLAGS`/`LDFLAGS`.
+
+**Build steps:**
+```bash
+# from the scikit-learn repo root
+python3 -m venv .venv
+source .venv/bin/activate              # IMPORTANT — see the meson error below
+pip install --upgrade pip
+pip install numpy scipy cython meson-python ninja pytest   # build + test deps
+pip install --editable . --no-build-isolation              # compiles the extensions (one time)
+```
+
+**Errors hit and how I fixed them:**
+
+| Error | Cause | Fix |
+|---|---|---|
+| `meson-python: error: meson executable "meson" not found` during the editable build | I invoked `pip` by its venv path *without activating the venv*, so the venv's `bin/` (which holds the `meson`/`ninja` console scripts) was not on `PATH`, and `meson-python` invokes `meson` by name | Activate the venv (`source .venv/bin/activate`), or otherwise put `.venv/bin` on `PATH`, **before** building so `meson`/`ninja` resolve |
+
+**Python 3.14 note:** 3.14 is very new (Oct 2025), but numpy/scipy/cython all ship `cp314` wheels, so the build dependencies installed as prebuilt wheels (no compiling) and the build succeeded — no need to downgrade Python.
+
+**Verification the source build is active:**
+```bash
+python -c "import sklearn; print(sklearn.__version__, sklearn.__file__)"
+# 1.10.dev0 /Users/ahmed/PycharmProjects/scikit-learn/sklearn/__init__.py
+```
+The `dev0` version and the in-repo path confirm Python imports my editable working copy. Because the fix lives in `_ranking.py` (**pure Python**), edits take effect on the next `import` with no recompile.
 
 ### Steps to Reproduce
 
@@ -72,9 +101,17 @@ The all-zero sample yields DCG = 0 and ideal DCG = 0; the `0/0` case is currentl
 
 ### Reproduction Evidence
 
-- **Commit showing reproduction:** <mark>[Phase II — link to a commit/branch in your fork with a failing test that reproduces this]</mark>
-- **Screenshots/logs:** <mark>[Phase II — terminal output showing 0.5]</mark>
-- **My findings:** <mark>[Phase II — what you confirm during reproduction]</mark>
+- **Working branch:** [`fix-issue-29521`](https://github.com/AhmedKhan-GH/scikit-learn/tree/fix-issue-29521) in my fork (`AhmedKhan-GH/scikit-learn`).
+- **Terminal output (against the source build, `1.10.dev0`):**
+  ```text
+  ndcg_score(y, y) = 0.5  (expected 1.0)
+  ```
+- **My findings:**
+  - The bug **still reproduces on the latest `main` (`1.10.dev0`)** — no fix has been merged — not just the 1.3.1 release the issue mentions.
+  - It is **deterministic** (`ndcg_score` is a pure function of its inputs): the same input yields `0.5` on every run, so the "reproduce at least twice" check is satisfied by construction.
+  - **Root cause located** in `sklearn/metrics/_ranking.py` → `_ndcg_sample_scores` (lines ~1944–1945): when the ideal DCG is 0 (`all_irrelevant`), the per-sample score is forced to `0` (`gain[all_irrelevant] = 0`) instead of being treated as undefined, so the all-zero sample contributes `0.0` and drags the mean to `0.5`.
+  - **Open-source contention (discovered during reproduction):** although no fix is *merged*, the issue is **actively being worked** — an open PR (**#34244**, `Fixes #29521`) already implements the maintainer-endorsed approach, and four earlier PRs (#30156, #33199, #33374, #33816) attempted it and were closed. See *Proposed Solution* for the Phase III implication.
+- **Failing regression test:** Not required for the Phase II deliverables (Step 5 does not list it); it would be the first step of Phase III implementation.
 
 ---
 
@@ -86,14 +123,14 @@ The root cause is how `_ndcg_sample_scores` normalizes a sample whose ideal DCG 
 
 ### Proposed Solution
 
-> _Final direction is pending maintainer confirmation on the issue thread — see the claiming comment._
+**Maintainer-decided direction (confirmed from the issue thread):** rather than any single naive fix, the maintainers (glemaitre, ogrisel) converged on adding a **`replaced_undefined_by` parameter** to `ndcg_score`. The all-zero / `0/0` sample is treated as *undefined* — returning **`np.nan` with an `UndefinedMetricWarning`** by default — and the caller may pass `0` or `1` instead. This mirrors the established `zero_division` pattern in `sklearn/metrics/_classification.py` (`_check_zero_division`) and the cross-metric standardization tracked in #29048 (now closed, 2026-04-08), which unblocked the work.
 
-High-level options under consideration:
-1. **Exclude** all-zero-relevance samples from the averaged score and emit a warning that they were ignored.
-2. **Define** the NDCG of an all-zero-relevance sample as `1.0` (a query with nothing relevant is trivially "perfectly" ranked).
-3. **Warn** the user that the metric is undefined for such samples.
+The three options originally considered (now superseded by the parameter approach):
+1. **Exclude** all-zero-relevance samples from the averaged score and warn.
+2. **Define** the NDCG of an all-zero-relevance sample as `1.0`.
+3. **Warn** that the metric is undefined for such samples.
 
-The issue reporter (@arabel1a) suggested options (1) or (3). I will propose a concrete approach in my claiming comment and confirm with a maintainer **before** implementing, since changing a published metric's output has backward-compatibility implications.
+**Status of the fix (discovered during reproduction):** this is no longer an open target for an independent fix — an **open PR #34244 (`Fixes #29521`)** already implements the `replaced_undefined_by` approach, and four prior PRs were closed. For **Phase III** I will therefore either (a) pivot to a genuinely-available issue, or (b) contribute by *reviewing and testing* PR #34244 — a recognized contribution under scikit-learn's guidelines. This decision will be finalized at the start of Phase III.
 
 ### Implementation Plan
 
@@ -101,7 +138,7 @@ Using UMPIRE framework (adapted):
 
 **Understand:** `ndcg_score(y, y)` must return 1.0, but returns 0.5 when a sample has all-zero relevances, because the `0/0` normalization for that sample is treated as 0.0.
 
-**Match:** Review how other scikit-learn metrics (e.g. those in `_ranking.py` and `_classification.py`) handle undefined-per-sample edge cases — many emit an `UndefinedMetricWarning` and substitute a defined value. Mirror that established pattern.
+**Match:** The established precedent is the `zero_division` handling in `sklearn/metrics/_classification.py` — `_check_zero_division` (around line 65) validates a `"warn"`/`0`/`1` argument and emits an `UndefinedMetricWarning` (defined in `sklearn/exceptions.py:140`) when a metric is undefined for a sample. The agreed `replaced_undefined_by` parameter for `ndcg_score` mirrors this pattern, and new public parameters are declared in the `@validate_params` decorator on `ndcg_score` (`_ranking.py:1950`).
 
 **Plan:**
 1. Add a failing regression test in `sklearn/metrics/tests/test_ranking.py` reproducing the `0.5` result.
@@ -110,9 +147,13 @@ Using UMPIRE framework (adapted):
 
 **Implement:** <mark>[Phase III — link to your branch/commits as you work]</mark>
 
-**Review:** <mark>[Phase III — self-review against scikit-learn's contributing guidelines + the PR checklist]</mark>
+**Review:** I reviewed scikit-learn's contribution conventions (`CONTRIBUTING.md` → `doc/developers/contributing.rst`) so I'm prepared for Phase III/IV:
+- **Commit / PR title prefixes** tag the change type — `FIX`, `ENH`, `MNT`, `DOC`, `TST` (e.g. existing PRs read `ENH Add replaced_undefined_by parameter…`, `FIX Exclude all-zero relevance…`).
+- **PR template** (`.github/PULL_REQUEST_TEMPLATE.md`) requires referencing the issue (`Fixes #29521`) and describing the change.
+- **Changelog:** user-facing changes need a fragment under `doc/whats_new/upcoming_changes/`.
+- **Style & checks:** code is formatted/linted with `ruff` (`build_tools/linting.sh`); public params need `@validate_params` entries; all changes need tests passing under `pytest`.
 
-**Evaluate:** <mark>[Phase III — confirm `ndcg_score(y, y) == 1.0` and the full ranking test suite passes]</mark>
+**Evaluate:** The fix will be validated (see *Testing Strategy* below) by: a regression test asserting the all-zero-relevance sample yields `np.nan` + an `UndefinedMetricWarning` by default (and `1.0` when `replaced_undefined_by=1`); confirming the existing `ndcg_score`/`dcg_score` tests still pass (no change for normal inputs); and running the full `pytest sklearn/metrics/tests/test_ranking.py` suite. (Execution happens in Phase III.)
 
 ---
 
@@ -120,8 +161,8 @@ Using UMPIRE framework (adapted):
 
 ### Unit Tests
 
-- [ ] `ndcg_score(y, y) == 1.0` when a sample has all-zero relevances (the regression case)
-- [ ] All-zero-relevance handling matches the agreed direction (excluded-with-warning, or defined value)
+- [ ] An all-zero-relevance sample yields `np.nan` + `UndefinedMetricWarning` by default (the agreed `replaced_undefined_by` behavior)
+- [ ] `replaced_undefined_by=1` makes that sample score `1.0` (so `ndcg_score(y, y) == 1.0` for the originally reported case)
 - [ ] Existing `ndcg_score` / `dcg_score` tests still pass (no behavior change for normal inputs)
 
 ### Integration Tests
@@ -141,9 +182,12 @@ Using UMPIRE framework (adapted):
 
 Selected issue #29521 after running the Step 5 selection checklist. Verified it is open, unassigned, and **PR-free** (checked the GitHub Development panel and cross-referenced PRs via the API), with recent activity (last updated April 2026). Confirmed the reproduction snippet returns `0.5`. Claimed it on the cohort sheet and commented on the GitHub issue proposing a fix direction.
 
-### Week [Y] Progress
+### Week 2 Progress (Phase II — Reproduce & Plan)
 
-<mark>[Continue documenting as you work]</mark>
+- **Built scikit-learn from source** (editable, `1.10.dev0`) in a Python 3.14 virtual environment; hit and fixed a `meson not found` PATH error (documented under Environment Setup).
+- **Created and pushed the working branch** `fix-issue-29521` to my fork.
+- **Reproduced** the bug against the source build (`ndcg_score(y, y) = 0.5`) and **located the root cause** at `_ranking.py:1944–1945`.
+- **Investigated the issue thread** and found (a) the maintainer-decided direction (`replaced_undefined_by`, `nan` + warning), and (b) that the fix is already covered by **open PR #34244** plus four closed PRs — a real lesson in open-source contention that shapes the Phase III plan (pivot or review).
 
 ### Code Changes
 
