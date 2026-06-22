@@ -5,7 +5,7 @@
 **Issue:** [scikit-learn/scikit-learn#29521 — NDCG in case of absence of relevant items](https://github.com/scikit-learn/scikit-learn/issues/29521)
 **Repository:** [scikit-learn/scikit-learn](https://github.com/scikit-learn/scikit-learn) (Python / Cython / C++)
 **Labels:** `Bug`, `help wanted`
-**Status:** Phase II Complete
+**Status:** Phase III Complete
 
 ---
 
@@ -145,7 +145,7 @@ Using UMPIRE framework (adapted):
 2. Update `_ndcg_sample_scores` / `_dcg_sample_scores` in `sklearn/metrics/_ranking.py` to handle the all-zero-relevance sample per the agreed direction.
 3. Add/adjust tests and update the docstring of `ndcg_score` to document the edge-case behavior.
 
-**Implement:** <mark>[Phase III — link to your branch/commits as you work]</mark>
+**Implement:** Done in Phase III. Commit [`650b206`](https://github.com/AhmedKhan-GH/scikit-learn/commit/650b206b7a) on branch [`fix-issue-29521`](https://github.com/AhmedKhan-GH/scikit-learn/tree/fix-issue-29521) — `ENH Add replaced_undefined_by parameter to ndcg_score (#29521)`. Built the fix test-first (TDD): three regression tests committed red, then the implementation made them green with no regressions across `test_ranking.py` (251 passed).
 
 **Review:** I reviewed scikit-learn's contribution conventions (`CONTRIBUTING.md` → `doc/developers/contributing.rst`) so I'm prepared for Phase III/IV:
 - **Commit / PR title prefixes** tag the change type — `FIX`, `ENH`, `MNT`, `DOC`, `TST` (e.g. existing PRs read `ENH Add replaced_undefined_by parameter…`, `FIX Exclude all-zero relevance…`).
@@ -161,18 +161,28 @@ Using UMPIRE framework (adapted):
 
 ### Unit Tests
 
-- [ ] An all-zero-relevance sample yields `np.nan` + `UndefinedMetricWarning` by default (the agreed `replaced_undefined_by` behavior)
-- [ ] `replaced_undefined_by=1` makes that sample score `1.0` (so `ndcg_score(y, y) == 1.0` for the originally reported case)
-- [ ] Existing `ndcg_score` / `dcg_score` tests still pass (no behavior change for normal inputs)
+Added to `sklearn/metrics/tests/test_ranking.py` (all written **before** the fix, per TDD):
 
-### Integration Tests
+- [x] `test_ndcg_all_zero_relevance_undefined_by_default` — an all-zero-relevance sample yields `np.nan` + `UndefinedMetricWarning` by default
+- [x] `test_ndcg_all_zero_relevance_replaced_undefined_by` — `replaced_undefined_by=1.0` makes that sample score `1.0` (so `ndcg_score(y, y) == 1.0` for the reported case); `=0.0` reproduces the old `0.5`
+- [x] `test_ndcg_replaced_undefined_by_invalid_value` — an out-of-domain value (e.g. `"bad"`) is rejected by `@validate_params`
+- [x] Existing `ndcg_score` / `dcg_score` tests still pass — full `test_ranking.py` is **251 passed** (updated the internal helper `_test_ndcg_score_for` to pass `replaced_undefined_by=0.0`, preserving its original intent now that the default is `np.nan`)
 
-- [ ] `GridSearchCV` / cross-validation using `ndcg_score` as the scorer no longer crashes or mis-scores on all-zero-relevance folds
-- [ ] <mark>[Integration scenario 2]</mark>
+### Integration / Wider-Suite Tests
+
+- [x] No regressions in the metric-scorer and common-metric suites: `test_common.py` + `test_score_objects.py` ndcg/dcg subset is **18 passed, 4 skipped**
+- [x] `ruff format --check` clean on both changed files; `ruff check` reports nothing on the changed lines (only pre-existing findings in untouched code under a newer-than-pinned local ruff)
 
 ### Manual Testing
 
-<mark>[Phase III — manual checks and results]</mark>
+Ran the reported snippet against the source build (`1.10.dev0`):
+
+```text
+ndcg_score(y, y)                       -> nan   (+ UndefinedMetricWarning)   # was 0.5
+ndcg_score(y, y, replaced_undefined_by=1.0) -> 1.0
+ndcg_score(y, y, replaced_undefined_by=0.0) -> 0.5
+ndcg_score([[10,0,0,1,5]], [[.1,.2,.3,4,70]]) -> 0.69  (docstring example unchanged)
+```
 
 ---
 
@@ -189,11 +199,23 @@ Selected issue #29521 after running the Step 5 selection checklist. Verified it 
 - **Reproduced** the bug against the source build (`ndcg_score(y, y) = 0.5`) and **located the root cause** at `_ranking.py:1944–1945`.
 - **Investigated the issue thread** and found (a) the maintainer-decided direction (`replaced_undefined_by`, `nan` + warning), and (b) that the fix is already covered by **open PR #34244** plus four closed PRs — a real lesson in open-source contention that shapes the Phase III plan (pivot or review).
 
+### Week 3 Progress (Phase III — Implement & Test)
+
+- **Confirmed the issue is still live and contested** before coding: issue #29521 is still open/unassigned, the bug still reproduces on `main` (`ndcg_score(y, y) = 0.5`), and the maintainer-endorsed fix already exists in **open PR #34244** (0 maintainer reviews in ~11 days) with four prior PRs closed. Decision: implement my own attempted fix on my fork branch to satisfy the Phase III deliverables (which require a *working, tested, local* fix — not a *merged* one); the upstream-PR strategy is a Phase IV question given the contention.
+- **Implemented the fix test-first (TDD):** wrote three failing tests, watched them fail for the right reasons (`DID NOT WARN`; unknown kwarg), then implemented until green.
+- **Mirrored the established `zero_division` convention** rather than inventing an API: same `Options(Real, {0.0, 1.0}), "nan"` validation pattern used across `_classification.py`.
+- **Verified no regressions** (`test_ranking.py` 251 passed; scorer/common ndcg subset 18 passed) and committed + pushed to the fork.
+
 ### Code Changes
 
-- **Files modified:** <mark>[List — expected: `sklearn/metrics/_ranking.py`, `sklearn/metrics/tests/test_ranking.py`]</mark>
-- **Key commits:** <mark>[Links to important commits]</mark>
-- **Approach decisions:** <mark>[Why you chose certain approaches]</mark>
+- **Files modified:**
+  - `sklearn/metrics/_ranking.py` — added `replaced_undefined_by` to `ndcg_score` (signature, `@validate_params`, docstring) and `_ndcg_sample_scores`; replaced the `gain[all_irrelevant] = 0` root-cause line with the caller-chosen fill value; emit `UndefinedMetricWarning` when undefined samples remain `np.nan`.
+  - `sklearn/metrics/tests/test_ranking.py` — three new regression tests; updated `_test_ndcg_score_for` helper to pass `replaced_undefined_by=0.0`.
+  - `doc/whats_new/upcoming_changes/sklearn.metrics/29521.enhancement.rst` — towncrier changelog fragment.
+- **Key commit:** [`650b206`](https://github.com/AhmedKhan-GH/scikit-learn/commit/650b206b7a) — `ENH Add replaced_undefined_by parameter to ndcg_score (#29521)`.
+- **Approach decisions:**
+  - **New parameter over a hard-coded rule.** Returning `1.0` for all-zero samples (the README's original Phase II thesis) is one defensible convention, but excluding them or warning is equally defensible — so the maintainers chose to let the *caller* decide. Defaulting to `np.nan` + warning makes the undefined case loud instead of silently wrong, and `replaced_undefined_by=1.0` recovers the intuitive `ndcg_score(y, y) == 1.0`.
+  - **Warn in the public `ndcg_score`, not in `_ndcg_sample_scores`.** Keeps the private helper side-effect-free so existing internal/test callers don't emit spurious warnings; the warning fires exactly when an undefined sample survives as `np.nan`.
 
 ---
 
@@ -215,11 +237,14 @@ Selected issue #29521 after running the Step 5 selection checklist. Verified it 
 
 ### Technical Skills Gained
 
-<mark>[What you learned technically]</mark>
+- Reading and extending a mature metrics module (`_ranking.py`) and following its conventions: `@validate_params` constraints (`Options`, `Interval`, the `"nan"` sentinel), `UndefinedMetricWarning`, towncrier changelog fragments, and the `ruff` toolchain.
+- Practicing strict TDD on a real codebase — writing tests that fail for the *right* reason before any production code.
 
 ### Challenges Overcome
 
-<mark>[What was hard and how you solved it]</mark>
+- **The fix direction wasn't a single "right" answer.** NDCG of an all-zero sample is genuinely undefined (`0/0`), and "return 1.0", "exclude it", and "warn" are all defensible. I resolved this by following the maintainers' precedent — the `zero_division` pattern in `_classification.py` — and exposing the choice to the caller via `replaced_undefined_by`, defaulting to a loud `np.nan` + warning.
+- **A behavior change rippled into an existing test.** Switching the undefined fill from `0` to `np.nan` broke `_test_ndcg_score_for` (its `score <= ideal` and `== 0` assertions assumed the old `0` fill). I traced every caller of `_ndcg_sample_scores` first, then updated that helper to request `replaced_undefined_by=0.0`, preserving its original intent.
+- **Linter noise from a version mismatch.** A freshly-`pip install`ed `ruff` (0.15) flagged 29 findings — all in pre-existing untouched code, none on my lines. I confirmed the project only floors `ruff>=0.12.2` and resisted "fixing" unrelated code (scope discipline).
 
 ### What I'd Do Differently Next Time
 
