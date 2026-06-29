@@ -5,7 +5,7 @@
 **Issue:** [scikit-learn/scikit-learn#29521 — NDCG in case of absence of relevant items](https://github.com/scikit-learn/scikit-learn/issues/29521)
 **Repository:** [scikit-learn/scikit-learn](https://github.com/scikit-learn/scikit-learn) (Python / Cython / C++)
 **Labels:** `Bug`, `help wanted`
-**Status:** Phase III Complete
+**Status:** Phase IV Complete — [PR #34410](https://github.com/scikit-learn/scikit-learn/pull/34410) submitted, awaiting review
 
 ---
 
@@ -221,15 +221,17 @@ Selected issue #29521 after running the Step 5 selection checklist. Verified it 
 
 ## Pull Request
 
-**PR Link:** <mark>[GitHub PR URL when submitted]</mark>
+**PR Link:** https://github.com/scikit-learn/scikit-learn/pull/34410
 
-**PR Description:** <mark>[Draft or final PR description — much of the content above can be adapted]</mark>
+**PR Description:** Adds a `replaced_undefined_by` parameter to `ndcg_score` so that samples with no relevant entries (the undefined `0/0` NDCG case) are surfaced as `np.nan` with an `UndefinedMetricWarning` by default — instead of being silently scored `0.0` and dragging the average below `1.0` — while letting the caller opt into `0.0`/`1.0` (so `ndcg_score(y, y) == 1.0` is recoverable). Includes three regression tests and a changelog fragment.
+
+**Open-source-etiquette note:** This issue was already actively worked when I submitted. An open PR (#34244) and a third independent contributor (databytelab) had each built the same `replaced_undefined_by` approach. I opened PR #34410 transparently — the description explicitly acknowledges #34244, discloses AI assistance per scikit-learn's policy, and states I'm happy for it to be closed in favour of #34244. It is offered as an independent learning deliverable and a source of additional regression tests, not as a competing claim on the issue.
 
 **Maintainer Feedback:**
-- <mark>[Date]</mark>: <mark>[Summary of feedback received]</mark>
-- <mark>[Date]</mark>: <mark>[How you addressed it]</mark>
+- _Awaiting first maintainer review (submitted 2026-06-28)._
+- _Anticipated, based on review of #34244:_ parameter likely should be renamed `replace_undefined_by` (present tense) to match the `cohen_kappa_score` / `class_likelihood_ratios` convention; the default behaviour change (silent `0` → warn+`NaN`) may require a `FutureWarning` deprecation cycle. Will address if/when raised.
 
-**Status:** <mark>[Awaiting review / Iterating / Approved / Merged]</mark>
+**Status:** Awaiting review
 
 ---
 
